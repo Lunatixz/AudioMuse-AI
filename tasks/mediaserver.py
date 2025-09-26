@@ -223,7 +223,7 @@ def _kodi_get_last_played_time(song_id, user_id, password):
         try:
             r = requests.post(url, auth=(config.KODI_HTTP_USERNAME, config.KODI_HTTP_PASSWORD), headers=config.HEADERS, json=params, timeout=REQUESTS_TIMEOUT)
             r.raise_for_status()
-            last_played_time = r.json().get("result",{}).get("songdetails",[]).get("lastplayed",-1)
+            last_played_time = r.json().get("result",{}).get("songdetails",{}).get("lastplayed",-1)
             kodi_load_profile(current_profile, "") #todo method for restoring org. user profile? require additional user credentials?
             return last_played_time
         except Exception as e:
