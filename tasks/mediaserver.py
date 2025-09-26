@@ -18,7 +18,7 @@ NAVIDROME_API_BATCH_SIZE = 40
 # KODI IMPLEMENTATION
 # ##############################################################################
 
-def _kodi_get_users(token):
+def _kodi_get_users():
     """Fetches a list of all users (profiles) from Kodi."""
     url = f"{config.KODI_URL}/jsonrpc"
     params = {"jsonrpc":"2.0","method":"Profiles.GetProfiles","params":{"properties":["thumbnail","lockmode"]},"id":"AudioMuse-AI"}
