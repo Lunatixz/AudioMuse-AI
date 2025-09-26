@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import config  # Import the config module to access server type and settings
+import collections
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,237 @@ logger = logging.getLogger(__name__)
 REQUESTS_TIMEOUT = 300
 # Define a batch size for Navidrome API calls to avoid long URLs
 NAVIDROME_API_BATCH_SIZE = 40
+
+# ##############################################################################
+# KODI IMPLEMENTATION
+# ##############################################################################
+
+def _kodi_get_users(token):
+    """Fetches a list of all users (profiles) from Kodi."""
+    url = f"{config.KODI_URL}/jsonrpc"
+    params = {"jsonrpc":"2.0","method":"Profiles.GetProfiles","params":{"properties":["thumbnail","lockmode"]},"id":"AudioMuse-AI"}
+    try:
+        r = requests.post(url, auth=(config.KODI_PROFILE_USERNAME, config.KODI_PROFILE_PASSWORD), headers=config.HEADERS, json=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        response_data = r.json()
+        return response_data.get("result",{}).get("profiles", [])
+    except Exception as e:
+        logger.error(f"Kodi get_users failed: {e}", exc_info=True)
+        return None
+
+def _kodi_get_current_profile():
+    """Fetches current user (profile) from Kodi."""
+    url = f"{config.KODI_URL}/jsonrpc"
+    params = {"jsonrpc":"2.0","method":"Profiles.GetCurrentProfile","params":{},"id":"AudioMuse-AI"}
+    try:
+        r = requests.post(url, auth=(config.KODI_PROFILE_USERNAME, config.KODI_PROFILE_PASSWORD), headers=config.HEADERS, json=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        response_data = r.json()
+        return response_data.get("result",{}).get("label", [])
+    except Exception as e:
+        logger.error(f"Kodi get_current_profile failed: {e}", exc_info=True)
+        break
+
+def _kodi_load_profile(user_id, password=""):
+    """Loads specific user (profile) to Kodi."""
+    url = f"{config.KODI_URL}/jsonrpc"
+    params = {"jsonrpc":"2.0","method":"Profiles.LoadProfile","params":{"profile":user_id,"prompt":false,"password":password},"id":"AudioMuse-AI"}
+    try:
+        r = requests.post(url, auth=(config.KODI_USER_NAME, config.KODI_PASSWORD), headers=config.HEADERS, json=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        response_data = r.json()
+        return response_data.get('result') == "OK"
+    except Exception as e:
+        logger.error(f"Kodi load_profile failed: {e}", exc_info=True)
+        break
+        
+# --- ADMIN/GLOBAL KODI FUNCTIONS ---
+def _kodi_get_recent_albums(limit):
+    """
+    Fetches a list of the most recently added albums from Kodi using pagination.
+    Uses global admin credentials.
+    """
+    
+    '''
+    KODI_HTTP_USERNAME = "kodi"
+    KODI_HTTP_PASSWORD = "kodi"
+    KODI_PROFILE_USERNAME = "Master user" *optional
+    KODI_PROFILE_PASSWORD = "" *optional
+    KODI_URL = "http://localhost:8080"
+    HEADERS = {"Content-Type": "application/json"}
+    '''
+    
+    all_albums = []
+    start_index = 0
+    page_size = 500
+    fetch_all = (limit == 0)
+    while fetch_all or len(all_albums) < limit:
+        size_to_fetch = page_size if fetch_all else min(page_size, limit - len(all_albums))
+        if size_to_fetch <= 0: break
+        url = f"{config.KODI_URL}/jsonrpc"
+        enums = ["title", "description", "artist", "genre", "theme", "mood", "style", "type", "albumlabel", "rating", "votes", "userrating", "year", "musicbrainzalbumid", "musicbrainzalbumartistid", "fanart",
+                  "thumbnail", "playcount", "artistid", "displayartist", "compilation", "releasetype", "dateadded", "sortartist", "musicbrainzreleasegroupid", "songgenres", "art", "lastplayed", "sourceid", "isboxset",
+                  "totaldiscs", "releasedate", "originaldate", "albumstatus", "datemodified", "datenew", "albumduration"] #remove unwanted meta parameters
+        params = {"jsonrpc":"2.0","method":"AudioLibrary.GetRecentlyAddedAlbums","params":{"properties":enums,"limits":{"end":size_to_fetch,"start":start_index},"sort":{"ignorearticle":True,"method":"dateadded","order":"descending","useartistsortname":True}},"id":"AudioMuse-AI"}
+        try:
+            r = requests.post(url, auth=(config.KODI_HTTP_USERNAME, config.KODI_HTTP_PASSWORD), headers=config.HEADERS, json=params, timeout=REQUESTS_TIMEOUT)
+            r.raise_for_status()
+            response_data = r.json()
+            albums = response_data.get("result",{}).get("albums", [])
+            if not albums: break
+            all_albums.extend(albums)
+            start_index += len(albums)
+            if len(albums) < size_to_fetch: break
+            if fetch_all and start_index >= response_data.get("limits",{}).get("total", float('inf')): break
+        except Exception as e:
+            logger.error(f"Kodi get_recent_albums failed: {e}", exc_info=True)
+            break
+    return all_albums
+
+def _kodi_get_tracks_from_album(album_id):
+    """Fetches all audio tracks for a given album ID from Kodi using user credentials."""
+    url = f"{config.KODI_URL}/jsonrpc"
+    enums = ["title","description","artist","genre","theme","mood","style","type","albumlabel","rating","votes","userrating","year","musicbrainzalbumid","musicbrainzalbumartistid","fanart",
+             "thumbnail","playcount","artistid","displayartist","compilation","releasetype","dateadded","sortartist","musicbrainzreleasegroupid","songgenres","art","lastplayed","sourceid","isboxset",
+             "totaldiscs","releasedate","originaldate","albumstatus","datemodified","datenew", "albumduration"] #remove unwanted meta parameters
+    params = {"jsonrpc":"2.0","method":"AudioLibrary.GetAlbumDetails","params":{"properties":enums,"albumid":album_id},"id":"AudioMuse-AI"}
+    try:
+        r = requests.post(url, auth=(config.KODI_HTTP_USERNAME, config.KODI_HTTP_PASSWORD), headers=config.HEADERS, json=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        return r.json().get("result",{}).get("albumdetails", [])
+    except Exception as e:
+        logger.error(f"Kodi get_tracks_from_album failed for album {album_id}: {e}", exc_info=True)
+        return []
+        
+def _kodi_download_track(temp_dir, item): #track request item ie. "songid"
+    """Downloads a single track from Kodi using user credentials."""
+    try:
+        track_id = item["songid"]
+        file_extension = os.path.splitext(item.get('file', ''))[1] or '.tmp'
+        download_url = f"{config.KODI_URL}/jsonrpc"
+        params = {"jsonrpc":"2.0","method":"Files.Download","params":{"name":item["file"]},"id":"AudioMuse-AI"}
+        local_filename = os.path.join(temp_dir, f"{track_id}{file_extension}")
+        with requests.post(download_url, auth=(config.KODI_HTTP_USERNAME, config.KODI_HTTP_PASSWORD), headers=config.HEADERS, json=params, stream=True, timeout=REQUESTS_TIMEOUT) as r:
+            r.raise_for_status()
+            with open(local_filename, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
+        logger.info(f"Downloaded '{item['Name']}' to '{local_filename}'")
+        return local_filename
+    except Exception as e:
+        logger.error(f"Failed to download track {item.get('Name', 'Unknown')}: {e}", exc_info=True)
+        return None
+
+def _kodi_get_all_songs():
+    """Fetches all songs from Kodi using user credentials."""
+    url = f"{config.KODI_URL}/jsonrpc"
+    enums = ["title","artist","albumartist","genre","year","rating","album","track","duration","comment","lyrics","musicbrainztrackid","musicbrainzartistid","musicbrainzalbumid","musicbrainzalbumartistid",
+             "playcount","fanart","thumbnail","file","albumid","lastplayed","disc","genreid","artistid","displayartist","albumartistid","albumreleasetype","dateadded","votes","userrating","mood","contributors",
+             "displaycomposer","displayconductor","displayorchestra","displaylyricist","sortartist","art","sourceid","disctitle","releasedate","originaldate","bpm","samplerate","bitrate","channels","datemodified",
+             "datenew","songvideourl"] #remove unwanted meta parameters
+    params = {"jsonrpc":"2.0","method":"AudioLibrary.GetSongs","params":{},"id":"AudioMuse-AI"}
+    try:
+        r = requests.post(url, auth=(config.KODI_HTTP_USERNAME, config.KODI_HTTP_PASSWORD), headers=config.HEADERS, json=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        return r.json().get("result",{}).get("songs", [])
+    except Exception as e:
+        logger.error(f"Kodi get_all_songs failed: {e}", exc_info=True)
+        return []
+
+def _kodi_get_playlist_by_name(playlist_name):
+    """Finds a Kodi playlist by its exact name using admin credentials."""
+    ...
+    # url = f"{config.KODI_URL}/Users/{config.KODI_HTTP_USERNAME}/Items"
+    # params = {"IncludeItemTypes": "Playlist", "Recursive": True, "Name": playlist_name}
+    # try:
+        # r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+        # r.raise_for_status()
+        # playlists = r.json().get("Items", [])
+        # return playlists[0] if playlists else None
+    # except Exception as e:
+        # logger.error(f"Kodi get_playlist_by_name failed for '{playlist_name}': {e}", exc_info=True)
+        # return None
+
+def _kodi_create_playlist(base_name, item_ids):
+    """Creates a new playlist on Kodi using user credentials."""
+    ...
+    # url = f"{config.KODI_URL}/Playlists"
+    # body = {"Name": base_name, "Ids": item_ids, "UserId": config.KODI_HTTP_USERNAME}
+    # try:
+        # r = requests.post(url, headers=config.HEADERS, json=body, timeout=REQUESTS_TIMEOUT)
+        # if r.ok: logger.info("✅ Created Kodi playlist '%s'", base_name)
+    # except Exception as e:
+        # logger.error("Exception creating Kodi playlist '%s': %s", base_name, e, exc_info=True)
+
+def _kodi_get_all_playlists():
+    """Fetches all playlists from Kodi using user credentials."""
+    ...
+    # url = f"{config.KODI_URL}/Users/{config.KODI_HTTP_USERNAME}/Items"
+    # params = {"IncludeItemTypes": "Playlist", "Recursive": True}
+    # try:
+        # r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+        # r.raise_for_status()
+        # return r.json().get("Items", [])
+    # except Exception as e:
+        # logger.error(f"Kodi get_all_playlists failed: {e}", exc_info=True)
+        # return []
+
+def _kodi_delete_playlist(playlist_id):
+    ...
+    # """Deletes a playlist on Kodi using user credentials."""
+    # url = f"{config.KODI_URL}/Items/{playlist_id}"
+    # try:
+        # r = requests.delete(url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
+        # r.raise_for_status()
+        # return True
+    # except Exception as e:
+        # logger.error(f"Exception deleting Kodi playlist ID {playlist_id}: {e}", exc_info=True)
+        # return False
+
+# --- USER-SPECIFIC KODI FUNCTIONS ---
+
+def _kodi_get_top_played_songs(limit, user_id, password):
+    """Fetches the top N most played songs from Kodi for a specific user."""
+    current_profile = _kodi_get_current_profile()
+    if _kodi_load_profile(user_id, password):
+        all_songs = _kodi_get_all_songs()
+        top_played_songs = sorted(all_songs, key=lambda x: x.get('playcount', 0), reverse=True)[:limit]
+        kodi_load_profile(current_profile, "") #todo method for restoring org. user profile? require additional user credentials?
+        return top_played_songs
+
+def _kodi_get_last_played_time(song_id, user_id, password):
+    """Fetches the last played time for a specific track from Kodi for a specific user."""
+    current_profile = _kodi_get_current_profile()
+    if _kodi_load_profile(user_id, password):
+        url = f"{config.KODI_URL}/jsonrpc"
+        enums = ["title", "artist", "albumartist", "genre", "year", "rating", "album", "track", "duration", "comment", "lyrics", "musicbrainztrackid", "musicbrainzartistid", "musicbrainzalbumid", 
+                 "musicbrainzalbumartistid", "playcount", "fanart", "thumbnail", "file", "albumid", "lastplayed", "disc", "genreid", "artistid", "displayartist", "albumartistid", "albumreleasetype", 
+                 "dateadded", "votes", "userrating", "mood", "contributors", "displaycomposer", "displayconductor", "displayorchestra", "displaylyricist", "sortartist", "art", "sourceid", "disctitle", 
+                 "releasedate", "originaldate", "bpm", "samplerate", "bitrate", "channels", "datemodified", "datenew", "songvideourl"] #remove unwanted meta parameters
+        params = {"jsonrpc":"2.0","method":"AudioLibrary.GetSongDetails","params":{"properties":enums,"songid":song_id},"id":"AudioMuse-AI"}
+        try:
+            r = requests.post(url, auth=(config.KODI_HTTP_USERNAME, config.KODI_HTTP_PASSWORD), headers=config.HEADERS, json=params, timeout=REQUESTS_TIMEOUT)
+            r.raise_for_status()
+            last_played_time = r.json().get("result",{}).get("songdetails",[]).get("lastplayed",-1)
+            kodi_load_profile(current_profile, "") #todo method for restoring org. user profile? require additional user credentials?
+            return last_played_time
+        except Exception as e:
+            logger.error(f"Jellyfin get_last_played_time failed for item {item_id}, user {user_id}: {e}", exc_info=True)
+            return None
+
+def _kodi_create_instant_playlist(playlist_name, item_ids, user_id, token):
+    """Creates a new instant playlist on Kodi for a specific user."""
+    ...
+    # final_playlist_name = f"{playlist_name.strip()}_instant"
+    # url = f"{config.KODI_URL}/Playlists"
+    # headers = {"X-Emby-Token": token}
+    # body = {"Name": final_playlist_name, "Ids": item_ids, "UserId": user_id}
+    # try:
+        # r = requests.post(url, headers=headers, json=body, timeout=REQUESTS_TIMEOUT)
+        # r.raise_for_status()
+        # return r.json()
+    # except Exception as e:
+        # logger.error("Exception creating Kodi instant playlist '%s' for user %s: %s", playlist_name, user_id, e, exc_info=True)
+        # return None
 
 
 # ##############################################################################
@@ -806,7 +1038,8 @@ def delete_automatic_playlists():
     """Deletes all playlists ending with '_automatic' using admin credentials."""
     logger.info("Starting deletion of all '_automatic' playlists.")
     deleted_count = 0
-    if config.MEDIASERVER_TYPE == 'jellyfin':
+    if config.MEDIASERVER_TYPE == 'kodi':...
+    elif config.MEDIASERVER_TYPE == 'jellyfin':
         for p in _jellyfin_get_all_playlists():
             if p.get('Name', '').endswith('_automatic') and _jellyfin_delete_playlist(p.get('Id')):
                 deleted_count += 1
@@ -822,6 +1055,7 @@ def delete_automatic_playlists():
 
 def get_recent_albums(limit):
     """Fetches recently added albums using admin credentials."""
+    if config.MEDIASERVER_TYPE == 'kodi': return _kodi_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'jellyfin': return _jellyfin_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'navidrome': return _navidrome_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'lyrion': return _lyrion_get_recent_albums(limit)
@@ -829,6 +1063,7 @@ def get_recent_albums(limit):
 
 def get_tracks_from_album(album_id):
     """Fetches tracks for an album using admin credentials."""
+    if config.MEDIASERVER_TYPE == 'kodi': return _kodi_get_tracks_from_album(album_id)
     if config.MEDIASERVER_TYPE == 'jellyfin': return _jellyfin_get_tracks_from_album(album_id)
     if config.MEDIASERVER_TYPE == 'navidrome': return _navidrome_get_tracks_from_album(album_id)
     if config.MEDIASERVER_TYPE == 'lyrion': return _lyrion_get_tracks_from_album(album_id)
@@ -836,6 +1071,7 @@ def get_tracks_from_album(album_id):
 
 def download_track(temp_dir, item):
     """Downloads a track using admin credentials."""
+    if config.MEDIASERVER_TYPE == 'kodi': return _kodi_download_track(temp_dir, item)
     if config.MEDIASERVER_TYPE == 'jellyfin': return _jellyfin_download_track(temp_dir, item)
     if config.MEDIASERVER_TYPE == 'navidrome': return _navidrome_download_track(temp_dir, item)
     if config.MEDIASERVER_TYPE == 'lyrion': return _lyrion_download_track(temp_dir, item)
@@ -843,6 +1079,7 @@ def download_track(temp_dir, item):
 
 def get_all_songs():
     """Fetches all songs using admin credentials."""
+    if config.MEDIASERVER_TYPE == 'kodi': return _kodi_get_all_songs()
     if config.MEDIASERVER_TYPE == 'jellyfin': return _jellyfin_get_all_songs()
     if config.MEDIASERVER_TYPE == 'navidrome': return _navidrome_get_all_songs()
     if config.MEDIASERVER_TYPE == 'lyrion': return _lyrion_get_all_songs()
@@ -851,6 +1088,7 @@ def get_all_songs():
 def get_playlist_by_name(playlist_name):
     """Finds a playlist by name using admin credentials."""
     if not playlist_name: raise ValueError("Playlist name is required.")
+    if config.MEDIASERVER_TYPE == 'kodi':...
     if config.MEDIASERVER_TYPE == 'jellyfin': return _jellyfin_get_playlist_by_name(playlist_name)
     if config.MEDIASERVER_TYPE == 'navidrome': return _navidrome_get_playlist_by_name(playlist_name)
     if config.MEDIASERVER_TYPE == 'lyrion': return _lyrion_get_playlist_by_name(playlist_name)
@@ -860,7 +1098,8 @@ def create_playlist(base_name, item_ids):
     """Creates a playlist using admin credentials."""
     if not base_name: raise ValueError("Playlist name is required.")
     if not item_ids: raise ValueError("Track IDs are required.")
-    if config.MEDIASERVER_TYPE == 'jellyfin': _jellyfin_create_playlist(base_name, item_ids)
+    if config.MEDIASERVER_TYPE == 'kodi':...
+    elif config.MEDIASERVER_TYPE == 'jellyfin': _jellyfin_create_playlist(base_name, item_ids)
     elif config.MEDIASERVER_TYPE == 'navidrome': _navidrome_create_playlist(base_name, item_ids)
     elif config.MEDIASERVER_TYPE == 'lyrion': _lyrion_create_playlist(base_name, item_ids)
 
@@ -869,6 +1108,7 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     if not playlist_name: raise ValueError("Playlist name is required.")
     if not item_ids: raise ValueError("Track IDs are required.")
     
+    if config.MEDIASERVER_TYPE == 'kodi':...
     if config.MEDIASERVER_TYPE == 'jellyfin':
         token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
         if not token: raise ValueError("Jellyfin Token is required.")
@@ -889,6 +1129,10 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
 
 def get_top_played_songs(limit, user_creds=None):
     """Fetches top played songs. Uses user_creds if provided, otherwise admin."""
+    if config.MEDIASERVER_TYPE == 'kodi':
+        user_id = user_creds.get('user_id') if user_creds else config.KODI_PROFILE_USERNAME
+        password = user_creds.get('password') if user_creds else config.KODI_PROFILE_PASSWORD
+        return _kodi_get_top_played_songs(item_id,user_id, password)
     if config.MEDIASERVER_TYPE == 'jellyfin':
         user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
         token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
@@ -902,6 +1146,10 @@ def get_top_played_songs(limit, user_creds=None):
 
 def get_last_played_time(item_id, user_creds=None):
     """Fetches last played time for a track. Uses user_creds if provided, otherwise admin."""
+    if config.MEDIASERVER_TYPE == 'kodi':
+        user_id = user_creds.get('user_id') if user_creds else config.KODI_PROFILE_USERNAME
+        password = user_creds.get('password') if user_creds else config.KODI_PROFILE_PASSWORD
+        return _kodi_get_last_played_time(item_id,user_id, password)
     if config.MEDIASERVER_TYPE == 'jellyfin':
         user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
         token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
