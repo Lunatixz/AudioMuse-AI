@@ -17,7 +17,14 @@ NAVIDROME_API_BATCH_SIZE = 40
 # ##############################################################################
 # KODI IMPLEMENTATION
 # ##############################################################################
-
+'''
+KODI_HTTP_USERNAME = "kodi"
+KODI_HTTP_PASSWORD = "kodi"
+KODI_PROFILE_USERNAME = "Master user" *optional
+KODI_PROFILE_PASSWORD = "" *optional
+KODI_URL = "http://localhost:8080"
+HEADERS = {"Content-Type": "application/json"}
+'''    
 def _kodi_get_users():
     """Fetches a list of all users (profiles) from Kodi."""
     url = f"{config.KODI_URL}/jsonrpc"
@@ -59,20 +66,7 @@ def _kodi_load_profile(user_id, password=""):
         
 # --- ADMIN/GLOBAL KODI FUNCTIONS ---
 def _kodi_get_recent_albums(limit):
-    """
-    Fetches a list of the most recently added albums from Kodi using pagination.
-    Uses global admin credentials.
-    """
-    
-    '''
-    KODI_HTTP_USERNAME = "kodi"
-    KODI_HTTP_PASSWORD = "kodi"
-    KODI_PROFILE_USERNAME = "Master user" *optional
-    KODI_PROFILE_PASSWORD = "" *optional
-    KODI_URL = "http://localhost:8080"
-    HEADERS = {"Content-Type": "application/json"}
-    '''
-    
+    """ Fetches a list of the most recently added albums from Kodi using pagination. """
     all_albums = []
     start_index = 0
     page_size = 500
